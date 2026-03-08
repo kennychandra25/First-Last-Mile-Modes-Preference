@@ -21,7 +21,6 @@ output:
 # Overal all chunk settings
 
 knitr::opts_chunk$set(echo = FALSE,knitr.kable.NA = ''
-                   #   ,root.dir = "C:/Users/24479/OneDrive/Desktop/2022假想偏差设计/成果/HB建模"
                       )
 
 # I/O
@@ -985,6 +984,7 @@ result <- lapply(names(vars), function(name) {
 
 
 ```
+
 
 
 
