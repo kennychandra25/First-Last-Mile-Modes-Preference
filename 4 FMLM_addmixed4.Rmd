@@ -1,6 +1,5 @@
 ---
 title: "FMLM_addmixed"
-author: "Tongfei Liu"
 date: "`r Sys.Date()`"
 header-includes:
   - \usepackage{fontspec} # use fontspec package
@@ -50,12 +49,10 @@ library(apollo)
 rm(list = ls())
 
 # Use only SP data
-# "C:\Users\Tongfei
 # fmlm_5.csv
 # fmlm_por.csv
-# "C:/Users/24479/Box/[L1FR] STSRG Lab Folder/Prasanna/Papers/FMLM 3-05-24/Purdue/fmlm_por.csv"
 
-database<- read.csv("C:/Users/Tongfei/Box/[L1FR] STSRG Lab Folder/Prasanna/Papers/FMLM 3-05-24/Purdue/fmlm_5.csv")
+database<- read.csv("C:/Users/kenny/Box/[L1FR] STSRG Lab Folder/Prasanna/Papers/FMLM 3-05-24/Purdue/fmlm_5.csv")
 
 database <- database %>% 
   mutate(Pri_car = ifelse(as.numeric(Q3.1_2)==1,1,0)) %>% 
@@ -408,8 +405,6 @@ sign_coef_LLC = function(modelname='model_name', mat) {
   
   copy_mat = mat
   
-  # 对矩阵中的Estimate列应用函数进行修改
-  
   mat[,1] = format(mat[,1], nsmall = 3)
   mat[,1] <- paste(mat[,1], sapply(mat[,3], add_sign), sep = "")
   mat = data.frame(mat[,1])
@@ -442,22 +437,19 @@ Save cleaned results to xlsx:
 
 save_to_xlsx <- function(data, file_name, sheet_name) {
   if (file.exists(file_name)) {
-    # 如果文件已存在，则读取文件
+
     wb <- loadWorkbook(file_name)
     
-    # 检查是否有相同的工作表名称
     if (sheet_name %in% names(wb)) {
-      # 如果有相同名称的表，删除旧的工作表
+
       removeWorksheet(wb, sheet_name)
     }
     
-    # 添加新工作表
     addWorksheet(wb, sheet_name)
     writeData(wb, sheet_name, data, rowNames = TRUE)
     saveWorkbook(wb, file_name, overwrite = TRUE)
     
   } else {
-    # 如果文件不存在，则创建新文件并添加表
     wb <- createWorkbook()
     addWorksheet(wb, sheet_name)
     writeData(wb, sheet_name, data, rowNames = TRUE)
@@ -558,5 +550,6 @@ save_to_xlsx(get(paste0('esttable_',model_name)),
 # dev.off()
 
 ```
+
 
 
