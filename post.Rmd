@@ -1,0 +1,993 @@
+---
+title: "FMLM_tt_at_Cor"
+author: "Kenny Chandra Wijaya"
+date: "`r Sys.Date()`"
+header-includes:
+  - \usepackage{fontspec} # use fontspec package
+  - \usepackage{xeCJK}    # use xeCJK package
+  - \usepackage{setspace}\setstretch{1.2}
+  - \usepackage{titlesec}
+  # - \newcommand{\sectionbreak}{\clearpage}
+  - \usepackage{siunitx}
+  - \newcolumntype{d}{S[table-format=3.3]}
+output: 
+  pdf_document: 
+    pandoc_args: ["--lua-filter=color-text.lua"]
+    latex_engine: xelatex
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+# Overal all chunk settings
+
+knitr::opts_chunk$set(echo = FALSE,knitr.kable.NA = ''
+                      )
+
+# I/O
+library(readxl)
+library(openxlsx)
+library(writexl)
+# rmd render
+library(kableExtra)
+library(pander)
+library(extrafont)
+library(showtext)
+# Data cleaning
+library(tidyverse)
+library(janitor)
+# Math
+library(scales)
+library(MASS)
+library(Matrix)
+# Plotting
+library(ggpubr)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+# DCM
+library(apollo)
+```
+
+# Preparations
+
+## load data
+
+```{r Initialization}
+
+# clean the environment
+
+rm(list = ls())
+
+database<- read.csv("C:\Users\kenny\OneDrive - purdue.edu\Documents\Kenny's File\Transportation Literature\Fall 2024\Prasanna\Papers\FMLM 3-05-24\Purdue\fmlm_5.csv")
+
+database <- database %>% 
+  mutate(Pri_car = ifelse(as.numeric(Q3.1_2)==1,1,0)) %>% 
+  mutate(Pri_tra = ifelse(as.numeric(Q3.1_2) %in% c(4,5),1,0))
+database <- database %>% dplyr::filter(av_car==0)
+
+```
+
+## load apollo setting
+
+```{r}
+
+# apollo Initialization
+
+model_name = 'addmixed4'
+Drawmethod = "sobol"
+Ndraws = 2000
+apollo_initialise()
+
+# Set core controls
+
+apollo_control = list(
+  modelName       = model_name,
+  modelDescr      = "MIXL with balanced sociodemo + latent, no correlations",
+  indivID         = "cid", 
+  outputDirectory = "output",
+  nCores          = parallel::detectCores()-1,
+  seed            = 123
+)
+
+# Define choice and data
+
+choiceAnalysis_settings <- list(
+  alternatives = c(walk=1,scooty=2, expbike=3, ondemand=4, ridehail=5),
+  avail        = list(walk=database$av_walk, scooty= database$av_Sc, expbike=database$av_Bik,
+                      ondemand=database$av_OnD,ridehail=database$av_Rid),
+  choiceVar    = database$choice,
+  explanators  = database[,c("STUD","Gend")],
+  rows = database$choice!=0
+)
+
+
+### Vector of parameters
+
+apollo_beta = c(
+  # ASC (Alternative Specific Constants)
+  asc_scooty         = 0,
+  asc_expbike        = 0,
+  asc_ondemand       = 0,
+  asc_ridehail       = 0,
+  
+  # Travel time coefficients (mu and sigma)
+  b_tt_walk_mu       = -1,
+  b_tt_scooty_mu     = -1,
+  b_tt_expbike_mu    = -1,
+  b_tt_OnD_mu        = -1,
+  b_tt_Rid_mu        = -1,
+  
+  b_tt_walk_sig      = 1,
+  b_tt_scooty_sig    = 1,
+  b_tt_expbike_sig   = 1,
+  b_tt_OnD_sig       = 1,
+  b_tt_Rid_sig       = 1,
+
+  # Access time coefficients (mu and sigma)
+  b_at_scooty_mu     = -1,
+  b_at_expbike_mu    = -1,
+  b_at_OnD_mu        = -1,
+  b_at_Rid_mu        = -1,
+  
+  b_at_scooty_sig    = 1,
+  b_at_expbike_sig   = 1,
+  b_at_OnD_sig       = 1,
+  b_at_Rid_sig       = 1,
+
+  # Cost coefficient
+  b_cost             = -1,
+
+  # Travel Time (TT) indirect effects
+  b_stud_TT_ondemand    = 0,
+  b_stud_TT_ridehail    = 0,
+
+  b_scfreq_TT_scooty    = 0,
+
+  b_ridfreq_TT_ridehail = 0,
+
+  # Access Time (AT) indirect effects
+
+  b_stud_AT_ondemand    = 0,
+  b_stud_AT_ridehail    = 0,
+  
+  b_bikfreq_AT_expbike  = 0,
+  
+  # STUD coefficients for on-demand ride and ride-hailing modes
+  b_stud_ondemand    = 0,
+
+  # Latent variable coefficient
+  b_GR_ridehail      = 0,  
+  
+  # Specific individual characteristics
+  b_rider_ondemand   = 0,
+  b_rider_ridehail   = 0,
+
+  b_scfreq_scooty    = 0,
+
+  b_scbik_plane_scooty  = 0,
+  b_scbik_plane_expbike = 0
+  )
+
+
+
+apollo_fixed = c()
+
+### Set parameters for generating draws
+
+apollo_draws = list(
+  interDrawsType = Drawmethod,
+  interNDraws = Ndraws,
+  interNormDraws= c(# Travel time
+                    "draws_tt_sc",
+                    "draws_tt_OnD",
+                    "draws_tt_bik",
+                    "draws_tt_Rid",
+                    "draws_tt_walk",
+                    "draws_tt_car",
+                    # Access time
+                    "draws_at_sc","draws_at_OnD",
+                    "draws_at_bik","draws_at_Rid")
+)
+
+### Create random parameters
+
+apollo_randCoeff = function(apollo_beta, apollo_inputs){
+  randcoeff = list()
+  
+  randcoeff[["b_tt_walk"]] = b_tt_walk_mu + b_tt_walk_sig * draws_tt_walk
+  
+  randcoeff[["b_tt_sc"]]   = b_tt_scooty_mu + b_tt_scooty_sig * draws_tt_sc  
+    
+  randcoeff[["b_tt_bik"]]  = b_tt_expbike_mu + b_tt_expbike_sig * draws_tt_bik
+                            
+  randcoeff[["b_tt_OnD"]]  = b_tt_OnD_mu + b_tt_OnD_sig * draws_tt_OnD
+                             
+  randcoeff[["b_tt_Rid"]]  = b_tt_Rid_mu + b_tt_Rid_sig * draws_tt_Rid
+                            
+  randcoeff[["b_at_sc"]]   = b_at_scooty_mu + b_at_scooty_sig * draws_at_sc
+                             
+  randcoeff[["b_at_bik"]]  = b_at_expbike_mu + b_at_expbike_sig * draws_at_bik
+  
+  randcoeff[["b_at_OnD"]]  = b_at_OnD_mu + b_at_OnD_sig * draws_at_OnD
+     
+  randcoeff[["b_at_Rid"]]  = b_at_Rid_mu + b_at_Rid_sig * draws_at_Rid
+  
+  return(randcoeff)
+}
+
+apollo_inputs = apollo_validateInputs()
+
+apollo_probabilities=function(apollo_beta, apollo_inputs, functionality="estimate"){
+  
+  ### Attach inputs and detach after function exit
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+  
+  ### Create list of probabilities P
+  P = list()
+  
+  ### List of utilities: these must use the same names as in mnl_settings, order is irrelevant
+  
+  V = list()
+  
+  # Walk is the base alternative, no individual characteristics included
+  V[["walk"]] = (
+    b_tt_walk * Walk_TT
+  )
+  
+  # Utility function for electric scooter mode
+  V[["scooty"]] = (
+    asc_scooty + 
+    b_tt_sc * Sc_TT + 
+    b_at_sc * Sc_AT + 
+    b_cost * Sc_Cost +
+      
+    # Specific individual characteristics
+    b_scfreq_scooty * scfreq +     
+    b_scbik_plane_scooty * scbik_plane +
+    
+    # TT (Travel Time) indirect effects
+    (
+     b_scfreq_TT_scooty * scfreq 
+     ) * Sc_TT 
+  
+    # AT (Access Time) indirect effects
+
+  )
+  
+  # Utility function for bike-sharing mode
+  V[["expbike"]] = (
+    asc_expbike + 
+    b_tt_bik * Bik_TT + 
+    b_at_bik * Bik_AT + 
+    b_cost * Bik_Cost +
+  
+    # Specific individual characteristics
+    b_scbik_plane_expbike * scbik_plane +
+    
+    # TT (Travel Time) indirect effects
+  
+    # AT (Access Time) indirect effects
+    (
+     b_bikfreq_AT_expbike * bikfreq
+     ) * Bik_AT
+  )
+  
+  # Utility function for on-demand ride mode
+  V[["ondemand"]] = (
+    asc_ondemand + 
+    b_tt_OnD * OnD_TT + 
+    b_at_OnD * OnD_AT + 
+    b_cost * OnD_Cost +
+  
+    # General individual characteristics (GIC)
+    b_stud_ondemand * STUD +       
+
+    # Specific individual characteristics
+    b_rider_ondemand * rider +      
+      
+    # TT (Travel Time) indirect effects
+    (
+     b_stud_TT_ondemand * STUD 
+     ) * OnD_TT +
+  
+    # AT (Access Time) indirect effects
+    (
+     b_stud_AT_ondemand * STUD 
+     ) * OnD_AT
+  )
+  
+  # Utility function for ride-hailing mode
+  V[["ridehail"]] = (
+    asc_ridehail + 
+    b_tt_Rid * Rid_TT + 
+    b_at_Rid * Rid_AT + 
+    b_cost * Rid_Cost +
+  
+    # General individual characteristics (GIC)
+    b_GR_ridehail * GR +           
+
+    # Specific individual characteristics
+    b_rider_ridehail * rider +      
+      
+    # TT (Travel Time) indirect effects
+    (b_stud_TT_ridehail * STUD + 
+     b_ridfreq_TT_ridehail * ridfreq
+     ) * Rid_TT +
+  
+    # AT (Access Time) indirect effects
+    (
+     b_stud_AT_ridehail * STUD
+     ) * Rid_AT
+  )
+
+  
+  ### Define settings for MNL model component
+  mnl_settings = list(
+    alternatives = c(walk=1,scooty=2, expbike=3, ondemand=4, ridehail=5),
+    avail        = list(walk=av_walk,
+                        scooty=av_Sc, 
+                        expbike=av_Bik, 
+                        ondemand=av_OnD, 
+                        ridehail=av_Rid ),
+    choiceVar    = choice,
+    utilities    = V
+  )
+  
+  ### Compute probabilities using MNL model
+  P[["model"]] = apollo_mnl(mnl_settings, functionality)
+  
+  ### Take product across observation for same individual
+  P = apollo_panelProd(P, apollo_inputs, functionality)
+  
+  ### Average across inter-individual draws
+  P = apollo_avgInterDraws(P, apollo_inputs, functionality)
+  
+  ### Prepare and return outputs of function
+  P = apollo_prepareProb(P, apollo_inputs, functionality)
+  return(P)
+}
+
+model = apollo_loadModel('addmixed4_OLD1')
+
+apollo_modelOutput(model)
+```
+
+
+
+
+# Post-estimation
+
+## variable Categories
+
+Behavioral Data
+
+- Walk_TT: "Travel time for walking mode (minutes)"
+
+- Sc_TT: "Travel time for electric scooter (minutes)"
+
+- Bik_TT: "Travel time for bike-sharing (minutes)"
+
+- OnD_TT: "Travel time for on-demand ride (minutes)"
+
+- Rid_TT: "Travel time for ride-hailing mode (minutes)"
+
+- Sc_AT: "Access time for electric scooter (minutes)"
+
+- Bik_AT: "Access time for bike-sharing (minutes)"
+
+- OnD_AT: "Access time for on-demand ride (minutes)"
+
+- Rid_AT: "Access time for ride-hailing mode (minutes)"
+
+- Sc_Cost: "Cost for electric scooter trip"
+
+- Bik_Cost: "Cost for bike-sharing trip"
+
+- OnD_Cost: "Cost for on-demand ride trip"
+
+- Rid_Cost: "Cost for ride-hailing mode trip"
+
+Personal Characteristic Data 12
+
+- STUD: "Student status (1 = Full-time or part-time student, 0 = Non-student)"
+
+- Gend: "Gender (1 = Male, 0 = Female or other)"
+
+- Emp: "Employment status (1 = Full-time employment, 0 = Other)"
+
+- Pola: "Political inclination (1 = Liberal or leaning liberal, 0 = Other)"
+
+- Pri_car: "Private car ownership status (1 = Owns a car, 0 = Does not own)"
+
+- GR: "Latent variable (Pro-environmental behavior)"
+
+- Pri_tra: "Primary transportation is public transport (1 = Public transport, 0 = Other)"
+
+- rider: "Bus rider status (1 = Bus user, 0 = Non-bus user)"
+
+- scfreq: "Electric scooter usage frequency (1 = At least 1-2 times per week, 0 = Less frequent)"
+
+- bikfreq: "Bike-sharing usage frequency (1 = At least 1-2 times per week, 0 = Less frequent)"
+
+- ridfreq: "Ride-hailing usage frequency (1 = At least 1-2 times per week, 0 = Less frequent)"
+
+- scbik_plane: "Planned variable for combined bike-sharing and electric scooter use (1 = Likely to use more when more protected lanes are available)"
+
+## clean database
+
+```{r}
+# Define the required fields and their order
+ordered_fields <- c( 'cid',
+  "choice", "Walk_TT", "Sc_TT", "Bik_TT", "OnD_TT", "Rid_TT",
+  "Sc_AT", "Bik_AT", "OnD_AT", "Rid_AT",
+  "Sc_Cost", "Bik_Cost", "OnD_Cost", "Rid_Cost",
+  "Gend", "Pri_car", 'Pri_tra',"scfreq", "bikfreq", "Emp", "STUD", "Pola", 
+  "rider", "ridfreq", "scbik_plane", "GR", "av_walk", "av_Sc", 
+  "av_Bik", "av_OnD", "av_Rid"
+)
+
+# Filter and reorder columns in the database based on ordered_fields
+database <- database[, ordered_fields[ordered_fields %in% names(database)], drop=FALSE]
+
+# Display the structure of the filtered and ordered database
+glimpse(database)
+
+data = database
+
+```
+
+## divide data by sociodemographic controls
+
+```{r}
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+temp <- data.frame()
+
+for (var in vars) {
+  temp_var <- database %>%
+    tabyl(!!sym(var)) %>%
+    mutate(Varname = var) %>%             # Add Varname column
+    rename(Value = !!sym(var)) %>%
+    mutate(percent = percent(n / sum(n)))  # Format percent to two decimal places   
+  
+  # Reorder columns by creating a new dataframe structure
+  temp_var <- temp_var[, c("Varname", "Value", "n", "percent")] 
+  
+  temp <- rbind(temp, temp_var)
+}
+
+# Individual level statistics
+temp_individual <- data.frame()
+
+for (var in vars) {
+  temp_var <- database %>%
+    group_by(cid) %>%                       # Group by cid (individuals)
+    summarize(Value = first(!!sym(var))) %>%  # Get the first value per individual for the variable
+    ungroup() %>%
+    tabyl(Value) %>%                        # Tabulate individual level
+    mutate(Varname = var) %>%
+    rename(nindiv = n) %>%                  # Rename n to nindiv (count of individuals)
+    mutate(percent = percent(nindiv / sum(nindiv), accuracy = 0.01))  # Format percent
+  
+  # Reorder columns
+  temp_var <- temp_var[, c("Varname", "Value", "nindiv", "percent")]
+  
+  temp_individual <- rbind(temp_individual, temp_var)
+}
+
+social_demo_observe = cbind(temp, temp_individual[,c(3,4)])
+
+print.data.frame(social_demo_observe)  
+```
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+```{r}
+
+# Function to split and name data subsets based on provided criteria
+split_data <- function(data, var_name, value) {
+  # Create a subset based on the variable and value
+  subset_data <- subset(data, data[[var_name]] == value)
+  
+  # Dynamically name the subset
+  assign(paste0("dt_", var_name, "_", value), subset_data, envir = .GlobalEnv)
+}
+
+# Split database by scfreq (0 and 1)
+split_data(database, "scfreq", 0)
+split_data(database, "scfreq", 1)
+
+# Split database by bikfreq (0 and 1)
+split_data(database, "bikfreq", 0)
+split_data(database, "bikfreq", 1)
+
+# Split database by STUD
+split_data(database, "STUD", 0)
+split_data(database, "STUD", 1)
+
+# Split database by rider
+split_data(database, "rider", 0)
+split_data(database, "rider", 1)
+
+# Split database by ridfreq (0 and 1)
+split_data(database, "ridfreq", 0)
+split_data(database, "ridfreq", 1)
+
+# Split database by scbik_plane (0 and 1)
+split_data(database, "scbik_plane", 0)
+split_data(database, "scbik_plane", 1)
+```
+
+## 1. Unconditionals
+
+```{r}
+database = data
+
+unconditional = apollo_unconditionals(model,
+                                      apollo_probabilities,
+                                      apollo_inputs)
+
+# Access time plot with appropriate title
+plot(density(unconditional$b_at_sc), xlim=c(-1,1), ylim=c(0,2.5), xlab="",
+     main="Access Time's Unconditional Distribution", col="red", lwd=2)
+lines(density(unconditional$b_at_bik), col= "orange",lwd=2)
+lines(density(unconditional$b_at_OnD), col= "pink",lwd=2)
+lines(density(unconditional$b_at_Rid), col= "blue",lwd=2)
+legend("topleft", inset = .02, legend=c("e-scooter","bike-share",
+      "ondemand transit","ride-hail"), col=c( "red", "orange",
+      "pink", "blue"), lty = 1, lwd = 2, box.lty = 0)
+
+# Travel time plot with appropriate title
+plot(density(unconditional$b_tt_sc), xlim=NULL, ylim=c(0,1.2), xlab="",
+     main="Travel Time's Unconditional Distribution", col="red", lwd=2)
+lines(density(unconditional$b_tt_bik), col= "orange",lwd=2)
+lines(density(unconditional$b_tt_OnD), col= "pink",lwd=2)
+lines(density(unconditional$b_tt_Rid), col= "blue",lwd=2)
+lines(density(unconditional$b_tt_walk), col= "green",lwd=2)
+legend("topleft", inset = .02, legend=c("e-scooter","bike-share",
+      "ondemand transit","ride-hail",'walk'), col=c( "red", "orange",
+      "pink", "blue",'green'), lty = 1, lwd = 2, box.lty = 0)
+
+```
+
+
+## 2. Conditionals by groups
+
+### prepare function
+
+```{r}
+
+
+plot_con_bygroup <- function(ap_model, ap_prob, ap_inputs, VarName,
+                             at_xlim = NULL, at_ylim=NULL,
+                             tt_xlim = NULL, tt_ylim=NULL) {
+  
+  # Compute conditional distributions
+  conditional <- apollo_conditionals(ap_model, ap_prob, ap_inputs)
+  nindiv <- length(conditional[["b_tt_walk"]][["ID"]])
+  
+  # Prepare data for access time coefficients plot
+  access_data <- data.frame(
+    x = c(conditional[["b_at_sc"]][["post.mean"]],
+          conditional[["b_at_bik"]][["post.mean"]],
+          conditional[["b_at_OnD"]][["post.mean"]],
+          conditional[["b_at_Rid"]][["post.mean"]]),
+    group = factor(rep(c("e-scooter", "bike-share", "ondemand", "ride-hail"), 
+                       times = c(length(conditional[["b_at_sc"]][["post.mean"]]), 
+                                 length(conditional[["b_at_bik"]][["post.mean"]]),
+                                 length(conditional[["b_at_OnD"]][["post.mean"]]), 
+                                 length(conditional[["b_at_Rid"]][["post.mean"]]))))
+  )
+  
+  # Generate access time plot using ggplot2
+  plot1 <- ggplot(access_data, aes(x = x, color = group)) +
+    geom_density(size = 1) +
+    labs(title = paste("Density Plot of Access Time Coefficients (", VarName, ")\n nindiv =", nindiv, sep=""),
+         x = "", y = "Density") +
+    xlim(at_xlim) +
+    ylim(at_ylim) +
+    theme_minimal() +
+    theme(
+      #text = element_text(family = "Times New Roman"),  # Set font to Times New Roman
+      plot.title = element_text(hjust = 0.5, size = 14),  # Center title and set font size
+      legend.title = element_blank(),  # Remove legend title
+      legend.position = "top"  # Move legend to top
+    ) +
+    guides(color = guide_legend(override.aes = list(linetype = 1))) +  # Change legend to lines
+    scale_color_manual(values = c("red", "orange", "pink", "blue"))
+
+  # Prepare data for travel time coefficients plot
+  travel_data <- data.frame(
+    x = c(conditional[["b_tt_sc"]][["post.mean"]],
+          conditional[["b_tt_bik"]][["post.mean"]],
+          conditional[["b_tt_OnD"]][["post.mean"]],
+          conditional[["b_tt_Rid"]][["post.mean"]],
+          conditional[["b_tt_walk"]][["post.mean"]]),
+    group = factor(rep(c("e-scooter", "bike-share", "ondemand", "ride-hail", "walk"), 
+                       times = c(length(conditional[["b_tt_sc"]][["post.mean"]]), 
+                                 length(conditional[["b_tt_bik"]][["post.mean"]]),
+                                 length(conditional[["b_tt_OnD"]][["post.mean"]]), 
+                                 length(conditional[["b_tt_Rid"]][["post.mean"]]),
+                                 length(conditional[["b_tt_walk"]][["post.mean"]]))))
+  )
+  
+  # Generate travel time plot using ggplot2
+  plot2 <- ggplot(travel_data, aes(x = x, color = group)) +
+    geom_density(size = 1) +
+    labs(title = paste("Density Plot of Travel Time Coefficients (", VarName, ")\n nindiv =", nindiv, sep=""),
+         x = "", y = "Density") +
+    xlim(tt_xlim) +
+    ylim(tt_ylim) +
+    theme_minimal() +
+    theme(
+      #text = element_text(family = "Times New Roman"),  # Set font to Times New Roman
+      plot.title = element_text(hjust = 0.5, size = 14),  # Center title and set font size
+      legend.title = element_blank(),  # Remove legend title
+      legend.position = "top"  # Move legend to top
+    ) +
+    guides(color = guide_legend(override.aes = list(linetype = 1, shape = NA))) +  # Change legend to lines
+    scale_color_manual(values = c("red", "orange", "pink", "blue", "green"))
+  
+  # Dynamically assign the plots to global environment
+  assign(paste0('p_', "dt_", VarName, '_at'), plot1, envir = .GlobalEnv)
+  assign(paste0('p_', "dt_", VarName, '_tt'), plot2, envir = .GlobalEnv)
+}
+
+```
+
+### plotting
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+#### (1) scfreq
+
+```{r}
+Varname = "scfreq_0"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+Varname = "scfreq_1"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+```
+
+
+#### (2) bikfreq
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+```{r}
+Varname = "bikfreq_0"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+Varname = "bikfreq_1"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+```
+
+#### (3) STUD
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+```{r}
+Varname = "STUD_0"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+Varname = "STUD_1"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+```
+
+#### (4) rider
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+```{r}
+Varname = "rider_0"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+Varname = "rider_1"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+```
+
+#### (5) ridfreq
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+```{r}
+Varname = "ridfreq_0"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+Varname = "ridfreq_1"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+```
+
+#### (6) scbik_plane
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+```{r}
+Varname = "scbik_plane_0"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+
+Varname = "scbik_plane_1"
+database = get(paste0("dt_",Varname))
+apollo_inputs = apollo_validateInputs()
+plot_con_bygroup(model, apollo_probabilities, apollo_inputs, Varname,
+                 c(-0.5,0.25),c(0,10),c(-4,1),c(0,2))
+get(paste0('p_', "dt_", Varname, '_at'))
+get(paste0('p_', "dt_", Varname, '_tt'))
+```
+
+### prepare combine plot functions
+
+```{r}
+# Define the packaged function
+generate_combined_plot <- function(Varname) {
+  
+  # Dynamically retrieve the plot objects by name
+  p_dt_at_0 <- get(paste0("p_dt_", Varname, "_0_at"))
+  p_dt_at_1 <- get(paste0("p_dt_", Varname, "_1_at"))
+  p_dt_tt_0 <- get(paste0("p_dt_", Varname, "_0_tt"))
+  p_dt_tt_1 <- get(paste0("p_dt_", Varname, "_1_tt"))
+
+  # Modify the plot subtitles and remove individual legends
+  p_dt_at_0 <- p_dt_at_0 + ggtitle(paste0("Access time (", Varname, "=0)")) + theme(legend.position = "none")
+  p_dt_at_1 <- p_dt_at_1 + ggtitle(paste0("Access time (", Varname, "=1)")) + theme(legend.position = "none")
+  p_dt_tt_0 <- p_dt_tt_0 + ggtitle(paste0("Travel time (", Varname, "=0)")) + theme(legend.position = "none")
+  p_dt_tt_1 <- p_dt_tt_1 + ggtitle(paste0("Travel time (", Varname, "=1)")) + theme(legend.position = "none")
+
+  # Extract the unified legend
+  legend_dt <- get_legend(p_dt_tt_1 + 
+                          theme(legend.position = "top", legend.direction = "horizontal"))
+
+  # Combine the four plots into a 2x2 layout
+  combined_plot_dt <- grid.arrange(
+    arrangeGrob(p_dt_at_0, p_dt_at_1, p_dt_tt_0, p_dt_tt_1, 
+                ncol = 2, nrow = 2),
+    ncol = 1
+  )
+
+  # Generate the final layout with a main title, legend, and combined plots
+  p_comb_con_Varname <- grid.arrange(
+    textGrob(paste0("Coefficients Distributions by Subgroup (", Varname, ")"), 
+             gp = gpar(fontsize = 16
+                       #, fontfamily = "Times New Roman"
+                       )), 
+    legend_dt,  
+    combined_plot_dt, 
+    ncol = 1, heights = c(0.1, 0.1, 1)  # Adjust height ratios
+  )
+
+  # Use assign to save the plot with a dynamic variable name
+  assign(paste0("p_comb_con_", Varname), p_comb_con_Varname, envir = .GlobalEnv)
+  
+  # Return the generated plot object
+  return(p_comb_con_Varname)
+}
+```
+
+
+
+### check combined plots
+
+vars <- c("scfreq", "bikfreq", "STUD", "rider", "ridfreq", "scbik_plane")
+
+```{r}
+generate_combined_plot("scfreq")
+generate_combined_plot("bikfreq")
+generate_combined_plot("STUD")
+generate_combined_plot("rider")
+generate_combined_plot("ridfreq")
+generate_combined_plot("scbik_plane")
+
+```
+
+## 3. VOT
+
+```{r}
+
+database = data
+
+deltaMethod_settings = list(
+  expression = c(
+    VOT_tt_walk    = "b_tt_walk_mu/b_cost",
+    VOT_tt_scooty  = "b_tt_scooty_mu/b_cost",
+    VOT_tt_expbike = "b_tt_expbike_mu/b_cost",
+    VOT_tt_OnD     = "b_tt_OnD_mu/b_cost",
+    VOT_tt_Rid     = "b_tt_Rid_mu/b_cost",
+    VOT_at_scooty  = "b_at_scooty_mu/b_cost",
+    VOT_at_expbike = "b_at_expbike_mu/b_cost",
+    VOT_at_OnD     = "b_at_OnD_mu/b_cost",
+    VOT_at_Rid     = "b_at_Rid_mu/b_cost"
+  ),
+  varcov = 'robust'  # include heteroscedasticity
+)
+
+se_apollo = apollo_deltaMethod(model, deltaMethod_settings)
+# se_apollo$`t-ratio (0)`
+# se_apollo$`Rob t-ratio (0)`
+se_apollo$Significance <- cut(se_apollo$`Rob t-ratio (0)`,
+                              breaks = c(-Inf, 1.64, 1.96, 2.58, Inf),
+                              labels = c("", "*", "**", "***"))
+
+se_apollo$Value <- paste0(se_apollo$Value, se_apollo$Significance)
+
+se_apollo_simplified <- se_apollo[, c("Expression", "Value")]
+
+print.data.frame(se_apollo_simplified)
+
+```
+
+## 4. Marginal Effects
+
+```{r}
+# Set database
+database = data
+apollo_inputs = apollo_validateInputs(database = database)
+
+# Predict baseline probabilities using the model and apollo_probabilities
+P_predicted <- apollo_prediction(model, apollo_probabilities, apollo_inputs)
+
+# Initialize an empty data frame to store results
+results <- data.frame(Data = character(), 
+                      walk = numeric(), 
+                      scooty = numeric(),
+                      expbike = numeric(),
+                      ondemand = numeric(),
+                      ridehail = numeric(),
+                      stringsAsFactors = FALSE)
+
+# Define the list of variables (not parameters) for which we want to calculate marginal effects
+param_list <- c(
+  "Walk_TT",
+  "Sc_TT",
+  "Bik_TT",
+  "OnD_TT",
+  "Rid_TT",
+  "Sc_AT",
+  "Bik_AT",
+  "OnD_AT",
+  "Rid_AT"
+)
+
+# Loop over each variable and calculate marginal effects
+for (param_name in param_list) {
+  
+  # Save the original values of the current variable
+  original_values <- database[[param_name]]
+  
+  # Increase the values of the current variable by 0.1% (small change)
+  database[[param_name]] <- original_values * 1.0001
+  
+  # Revalidate apollo_inputs after modifying the data
+  apollo_inputs_new <- apollo_validateInputs(database = database)
+  
+  # Predict new probabilities with the updated variable values
+  P_predicted_new <- apollo_prediction(model, apollo_probabilities, apollo_inputs_new)
+  
+  # Calculate marginal effects for each choice alternative
+  me_walk <- (P_predicted_new$walk - P_predicted$walk) / (original_values * 0.0001)
+  me_scooty <- (P_predicted_new$scooty - P_predicted$scooty) / (original_values * 0.0001)
+  me_expbike <- (P_predicted_new$expbike - P_predicted$expbike) / (original_values * 0.0001)
+  me_ondemand <- (P_predicted_new$ondemand - P_predicted$ondemand) / (original_values * 0.0001)
+  me_ridehail <- (P_predicted_new$ridehail - P_predicted$ridehail) / (original_values * 0.0001)
+  
+  # Compute the average marginal effect across all individuals
+  mean_me_walk <- mean(me_walk, na.rm = TRUE)
+  mean_me_scooty <- mean(me_scooty, na.rm = TRUE)
+  mean_me_expbike <- mean(me_expbike, na.rm = TRUE)
+  mean_me_ondemand <- mean(me_ondemand, na.rm = TRUE)
+  mean_me_ridehail <- mean(me_ridehail, na.rm = TRUE)
+  
+  # Append the result to the results data frame
+  results <- rbind(results, data.frame(Data = param_name, 
+                                       walk = mean_me_walk, 
+                                       scooty = mean_me_scooty, 
+                                       expbike = mean_me_expbike, 
+                                       ondemand = mean_me_ondemand, 
+                                       ridehail = mean_me_ridehail))
+  
+  # Restore the original values of the variable for the next iteration
+  database[[param_name]] <- original_values
+}
+
+# Format the marginal effects as percentages with two decimal places
+results$walk <- percent(results$walk, accuracy = 0.01)
+results$scooty <- percent(results$scooty, accuracy = 0.01)
+results$expbike <- percent(results$expbike, accuracy = 0.01)
+results$ondemand <- percent(results$ondemand, accuracy = 0.01)
+results$ridehail <- percent(results$ridehail, accuracy = 0.01)
+
+# Display the final results
+print.data.frame(results)
+
+
+```
+
+Check data distribution
+```{r}
+vars <- list(
+  Walk_TT = data$Walk_TT,
+  Sc_TT = data$Sc_TT,
+  Bik_TT = data$Bik_TT,
+  OnD_TT = data$OnD_TT,
+  Rid_TT = data$Rid_TT,
+  Sc_AT = data$Sc_AT,
+  Bik_AT = data$Bik_AT,
+  OnD_AT = data$OnD_AT,
+  Rid_AT = data$Rid_AT
+)
+
+result <- lapply(names(vars), function(name) {
+  cat("\nTable for", name, ":\n")
+  print(table(vars[[name]]))
+  cat("\n-------------------------------\n")
+})
+
+
+```
+
+
+
+
+
+
+
+

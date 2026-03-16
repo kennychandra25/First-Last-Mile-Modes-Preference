@@ -1,0 +1,556 @@
+---
+title: "FMLM_addmixed"
+author: "Kenny Chandra Wijaya"
+date: "`r Sys.Date()`"
+header-includes:
+  - \usepackage{fontspec} # use fontspec package
+  - \usepackage{xeCJK}    # use xeCJK package
+  - \usepackage{setspace}\setstretch{1.2}
+  - \usepackage{titlesec}
+  # - \newcommand{\sectionbreak}{\clearpage}
+  - \usepackage{siunitx}
+  - \newcolumntype{d}{S[table-format=3.3]}
+output: 
+  pdf_document: 
+    pandoc_args: ["--lua-filter=color-text.lua"]
+    latex_engine: xelatex
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+# Overal all chunk settings
+
+knitr::opts_chunk$set(echo = FALSE,knitr.kable.NA = '')
+
+# I/O
+library(readxl)
+library(openxlsx)
+library(writexl)
+# rmd render
+library(kableExtra)
+library(pander)
+library(extrafont)
+library(showtext)
+# Data cleaning
+library(tidyverse)
+# Plotting
+library(ggpubr)
+library(ggplot2)
+library(gridExtra)
+# DCM
+library(apollo)
+```
+
+# Preparations
+
+```{r Initialization}
+
+# clean the environment
+
+rm(list = ls())
+
+# Use only SP data
+# "C:\Users\Tongfei
+# fmlm_5.csv
+# fmlm_por.csv
+# "C:/Users/24479/Box/[L1FR] STSRG Lab Folder/Prasanna/Papers/FMLM 3-05-24/Purdue/fmlm_por.csv"
+
+database<- read.csv("C:/Users/kenny/Box/[L1FR] STSRG Lab Folder/Prasanna/Papers/FMLM 3-05-24/Purdue/fmlm_5.csv")
+
+database <- database %>% 
+  mutate(Pri_car = ifelse(as.numeric(Q3.1_2)==1,1,0)) %>% 
+  mutate(Pri_tra = ifelse(as.numeric(Q3.1_2) %in% c(4,5),1,0))
+database <- database %>% dplyr::filter(av_car==0)
+
+# glimpse(database)
+```
+
+# Apollo settings
+
+## Global control and choice-settings
+
+```{r Apollo_preparation}
+
+# apollo Initialization
+
+model_name = 'addmixed4'
+Drawmethod = "sobol"
+Ndraws = 2000
+apollo_initialise()
+
+# Set core controls
+
+apollo_control = list(
+  modelName       = model_name,
+  modelDescr      = "MIXL with balanced sociodemo + latent, no correlations",
+  indivID         = "cid", 
+  outputDirectory = "output",
+  nCores          = parallel::detectCores()-1,
+  seed            = 123
+)
+
+# Define choice and data
+
+choiceAnalysis_settings <- list(
+  alternatives = c(walk=1,scooty=2, expbike=3, ondemand=4, ridehail=5),
+  avail        = list(walk=database$av_walk, scooty= database$av_Sc, expbike=database$av_Bik,
+                      ondemand=database$av_OnD,ridehail=database$av_Rid),
+  choiceVar    = database$choice,
+  explanators  = database[,c("STUD","Gend")],
+  rows = database$choice!=0
+)
+
+```
+
+## Define parameters
+
+
+```{r parameters}
+
+### Vector of parameters
+
+apollo_beta = c(
+  # ASC (Alternative Specific Constants)
+  asc_scooty         = 0,
+  asc_expbike        = 0,
+  asc_ondemand       = 0,
+  asc_ridehail       = 0,
+  
+  # Travel time coefficients (mu and sigma)
+  b_tt_walk_mu       = -1,
+  b_tt_scooty_mu     = -1,
+  b_tt_expbike_mu    = -1,
+  b_tt_OnD_mu        = -1,
+  b_tt_Rid_mu        = -1,
+  
+  b_tt_walk_sig      = 1,
+  b_tt_scooty_sig    = 1,
+  b_tt_expbike_sig   = 1,
+  b_tt_OnD_sig       = 1,
+  b_tt_Rid_sig       = 1,
+
+  # Access time coefficients (mu and sigma)
+  b_at_scooty_mu     = -1,
+  b_at_expbike_mu    = -1,
+  b_at_OnD_mu        = -1,
+  b_at_Rid_mu        = -1,
+  
+  b_at_scooty_sig    = 1,
+  b_at_expbike_sig   = 1,
+  b_at_OnD_sig       = 1,
+  b_at_Rid_sig       = 1,
+
+  # Cost coefficient
+  b_cost             = -1,
+
+  # Travel Time (TT) indirect effects
+  b_stud_TT_ondemand    = 0,
+  b_stud_TT_ridehail    = 0,
+
+  b_scfreq_TT_scooty    = 0,
+
+  b_ridfreq_TT_ridehail = 0,
+
+  # Access Time (AT) indirect effects
+
+  b_stud_AT_ondemand    = 0,
+  b_stud_AT_ridehail    = 0,
+  
+  b_bikfreq_AT_expbike  = 0,
+  
+  # STUD coefficients for on-demand ride and ride-hailing modes
+  b_stud_ondemand    = 0,
+
+  # Latent variable coefficient
+  b_GR_ridehail      = 0,  
+  
+  # Specific individual characteristics
+  b_rider_ondemand   = 0,
+  b_rider_ridehail   = 0,
+
+  b_scfreq_scooty    = 0,
+
+  b_scbik_plane_scooty  = 0,
+  b_scbik_plane_expbike = 0
+  )
+
+
+
+apollo_fixed = c()
+
+### Set parameters for generating draws
+
+apollo_draws = list(
+  interDrawsType = Drawmethod,
+  interNDraws = Ndraws,
+  interNormDraws= c(# Travel time
+                    "draws_tt_sc",
+                    "draws_tt_OnD",
+                    "draws_tt_bik",
+                    "draws_tt_Rid",
+                    "draws_tt_walk",
+                    "draws_tt_car",
+                    # Access time
+                    "draws_at_sc","draws_at_OnD",
+                    "draws_at_bik","draws_at_Rid")
+)
+
+### Create random parameters
+
+apollo_randCoeff = function(apollo_beta, apollo_inputs){
+  randcoeff = list()
+  
+  randcoeff[["b_tt_walk"]] = b_tt_walk_mu + b_tt_walk_sig * draws_tt_walk
+  
+  randcoeff[["b_tt_sc"]]   = b_tt_scooty_mu + b_tt_scooty_sig * draws_tt_sc  
+    
+  randcoeff[["b_tt_bik"]]  = b_tt_expbike_mu + b_tt_expbike_sig * draws_tt_bik
+                            
+  randcoeff[["b_tt_OnD"]]  = b_tt_OnD_mu + b_tt_OnD_sig * draws_tt_OnD
+                             
+  randcoeff[["b_tt_Rid"]]  = b_tt_Rid_mu + b_tt_Rid_sig * draws_tt_Rid
+                            
+  randcoeff[["b_at_sc"]]   = b_at_scooty_mu + b_at_scooty_sig * draws_at_sc
+                             
+  randcoeff[["b_at_bik"]]  = b_at_expbike_mu + b_at_expbike_sig * draws_at_bik
+  
+  randcoeff[["b_at_OnD"]]  = b_at_OnD_mu + b_at_OnD_sig * draws_at_OnD
+     
+  randcoeff[["b_at_Rid"]]  = b_at_Rid_mu + b_at_Rid_sig * draws_at_Rid
+  
+  return(randcoeff)
+}
+
+### Read in starting values for at least some parameters from existing 
+# apollo_beta = apollo_readBeta(apollo_beta, apollo_fixed, 
+#                               "MMNL_heterogeneity_w_ocar+soclat_final1",
+#                               overwriteFixed=FALSE)
+
+apollo_inputs = apollo_validateInputs()
+
+```
+
+
+
+## Define utility_function
+
+Sociodemographic Controls:
+- **Gend**: Gender
+- **Emp**: Employment status
+- **STUD**: Student status
+- **Pri_car**: Private car ownership status
+- **Pola**: Political inclination
+- **GR**
+
+- **scfreq**: Frequency of scooter usage
+- **bikfreq**: Frequency of electric bike usage
+- **scbik_plane**: Joint planning variable for electric bike and scooter
+- **ridfreq**: Frequency of ride-hailing usage
+- **rider**: Whether the person is a rider
+
+
+```{R utility_function}
+
+apollo_probabilities=function(apollo_beta, apollo_inputs, functionality="estimate"){
+  
+  ### Attach inputs and detach after function exit
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+  
+  ### Create list of probabilities P
+  P = list()
+  
+  ### List of utilities: these must use the same names as in mnl_settings, order is irrelevant
+  
+  V = list()
+  
+  # Walk is the base alternative, no individual characteristics included
+  V[["walk"]] = (
+    b_tt_walk * Walk_TT
+  )
+  
+  # Utility function for electric scooter mode
+  V[["scooty"]] = (
+    asc_scooty + 
+    b_tt_sc * Sc_TT + 
+    b_at_sc * Sc_AT + 
+    b_cost * Sc_Cost +
+      
+    # Specific individual characteristics
+    b_scfreq_scooty * scfreq +     
+    b_scbik_plane_scooty * scbik_plane +
+    
+    # TT (Travel Time) indirect effects
+    (
+     b_scfreq_TT_scooty * scfreq 
+     ) * Sc_TT 
+  
+    # AT (Access Time) indirect effects
+
+  )
+  
+  # Utility function for bike-sharing mode
+  V[["expbike"]] = (
+    asc_expbike + 
+    b_tt_bik * Bik_TT + 
+    b_at_bik * Bik_AT + 
+    b_cost * Bik_Cost +
+  
+    # Specific individual characteristics
+    b_scbik_plane_expbike * scbik_plane +
+    
+    # TT (Travel Time) indirect effects
+  
+    # AT (Access Time) indirect effects
+    (
+     b_bikfreq_AT_expbike * bikfreq
+     ) * Bik_AT
+  )
+  
+  # Utility function for on-demand ride mode
+  V[["ondemand"]] = (
+    asc_ondemand + 
+    b_tt_OnD * OnD_TT + 
+    b_at_OnD * OnD_AT + 
+    b_cost * OnD_Cost +
+  
+    # General individual characteristics (GIC)
+    b_stud_ondemand * STUD +       
+
+    # Specific individual characteristics
+    b_rider_ondemand * rider +      
+      
+    # TT (Travel Time) indirect effects
+    (
+     b_stud_TT_ondemand * STUD 
+     ) * OnD_TT +
+  
+    # AT (Access Time) indirect effects
+    (
+     b_stud_AT_ondemand * STUD 
+     ) * OnD_AT
+  )
+  
+  # Utility function for ride-hailing mode
+  V[["ridehail"]] = (
+    asc_ridehail + 
+    b_tt_Rid * Rid_TT + 
+    b_at_Rid * Rid_AT + 
+    b_cost * Rid_Cost +
+  
+    # General individual characteristics (GIC)
+    b_GR_ridehail * GR +           
+
+    # Specific individual characteristics
+    b_rider_ridehail * rider +      
+      
+    # TT (Travel Time) indirect effects
+    (b_stud_TT_ridehail * STUD + 
+     b_ridfreq_TT_ridehail * ridfreq
+     ) * Rid_TT +
+  
+    # AT (Access Time) indirect effects
+    (
+     b_stud_AT_ridehail * STUD
+     ) * Rid_AT
+  )
+
+  
+  ### Define settings for MNL model component
+  mnl_settings = list(
+    alternatives = c(walk=1,scooty=2, expbike=3, ondemand=4, ridehail=5),
+    avail        = list(walk=av_walk,
+                        scooty=av_Sc, 
+                        expbike=av_Bik, 
+                        ondemand=av_OnD, 
+                        ridehail=av_Rid ),
+    choiceVar    = choice,
+    utilities    = V
+  )
+  
+  ### Compute probabilities using MNL model
+  P[["model"]] = apollo_mnl(mnl_settings, functionality)
+  
+  ### Take product across observation for same individual
+  P = apollo_panelProd(P, apollo_inputs, functionality)
+  
+  ### Average across inter-individual draws
+  P = apollo_avgInterDraws(P, apollo_inputs, functionality)
+  
+  ### Prepare and return outputs of function
+  P = apollo_prepareProb(P, apollo_inputs, functionality)
+  return(P)
+}
+
+```
+
+## Prepare useful functions
+
+Apollo estimation result cleaning
+
+```{r result_cleaning_function}
+
+sign_coef_LLC = function(modelname='model_name', mat) {
+  
+  # add significance star
+  
+  add_sign <- function(p_value) {
+    if (p_value < 0.01) {
+      return("***")
+    } else if (p_value < 0.05) {
+      return("**")
+    } else if (p_value < 0.1) {
+      return("*")
+    } else {
+      return("")
+    }
+  }
+  
+  copy_mat = mat
+  
+  mat[,1] = format(mat[,1], nsmall = 3)
+  mat[,1] <- paste(mat[,1], sapply(mat[,3], add_sign), sep = "")
+  mat = data.frame(mat[,1])
+  mat = rbind(mat, model$nIndivs, model$nObs, model$nFreeParams,
+              round(model$LLC,2), round(model$LLout,2), 
+              round(model$adjRho2_0,2), round(model$BIC,2))
+  
+  SE = c(abs(copy_mat[,2]), rep(NA, 7))
+  
+  mat = cbind(mat, SE)
+
+  rownames(mat)[(nrow(mat)-6):nrow(mat)] = c('nIndivs','nobs','nbeta','LL(c)',
+                          'LL(beta)','Adj.rho2','BIC')
+  colnames(mat) = c(modelname,'s.e.')
+
+  return(mat)
+}
+
+```
+
+Save cleaned results to xlsx:
+
+- create new xlsx
+
+- if xlsx exists, append
+
+- if sheet exists, rewrite
+
+```{r SaveToXlsx}
+
+save_to_xlsx <- function(data, file_name, sheet_name) {
+  if (file.exists(file_name)) {
+
+    wb <- loadWorkbook(file_name)
+    
+    if (sheet_name %in% names(wb)) {
+      removeWorksheet(wb, sheet_name)
+    }
+    
+    addWorksheet(wb, sheet_name)
+    writeData(wb, sheet_name, data, rowNames = TRUE)
+    saveWorkbook(wb, file_name, overwrite = TRUE)
+    
+  } else {
+    wb <- createWorkbook()
+    addWorksheet(wb, sheet_name)
+    writeData(wb, sheet_name, data, rowNames = TRUE)
+    saveWorkbook(wb, file_name, overwrite = TRUE)
+  }
+}
+
+```
+
+
+## Estimation and clean result
+
+```{r estimation}
+
+# MODEL ESTIMATION 
+
+model = apollo_estimate(apollo_beta, apollo_fixed, apollo_probabilities, apollo_inputs,
+                        estimate_settings = list(silent = FALSE,
+                                                 maxIterations=400,
+                                                 writeIter = F))
+
+# FORMATTED OUTPUT (TO SCREEN)
+
+modelOutput_settings = list() #controls for summary
+modelOutput_settings[['printPVal']] = 2 #include p-values and robust standard errros
+
+est_mat = as.matrix(round(apollo_modelOutput(model, modelOutput_settings)[,c(1,5,7)],3),ncol=3)
+
+est_mat = est_mat[complete.cases(est_mat), ]
+
+est_table = data.frame(sign_coef_LLC(model_name, est_mat))
+
+# Save model to memory
+
+assign(paste0('apollo_',model_name),model)
+assign(paste0('estmat_',model_name),est_mat)
+assign(paste0('esttable_',model_name),est_table)
+
+# print summarized model report to console
+
+print.data.frame(get(paste0('esttable_',model_name)))
+
+# save model to file
+
+apollo_saveOutput(get(paste0('apollo_',model_name)),saveOutput_settings = list(printPVal=2))
+
+# save summarized model report to file
+
+save_to_xlsx(get(paste0('esttable_',model_name)),
+             paste0("Summarized_",
+                    "addmixed",
+                    ".xlsx"),
+             model_name
+             )
+
+# output_list <- list(model_name = get(paste0('esttable_',model_name))
+#                     )
+# 
+# write.xlsx(output_list, 
+#            file = paste0("Summarized_",
+#                          model_name,
+#                          ".xlsx"),
+#            rowNames = T, colNames = T,
+#            overwrite = FALSE,
+#            append = TRUE)
+
+# load from file
+
+# model = apollo_loadModel(get(paste0('apollo_',model_name)))
+
+```
+
+## Post-estimation
+
+```{r}
+
+#Unconditionals#
+
+# unconditional = apollo_unconditionals(get(paste0('apollo_',model_name)),
+#                                       apollo_probabilities, 
+#                                       apollo_inputs)
+# 
+# #Plotting the random parameter distribution
+# 
+# tiff("atranpar.tiff", width =6, height = 4, units = 'in', res = 500)
+# 
+# #par(mar=c(4,6,1,0))
+# 
+# plot(density(unconditional$b_at_sc), xlim=c(-1,1), ylim=c(0,7),xlab="", 
+#      main="", col="red", lwd=2)
+# lines(density(unconditional$b_at_bik), col= "orange",lwd=2)
+# lines(density(unconditional$b_at_OnD), col= "blueviolet",lwd=2)
+# lines(density(unconditional$b_at_Rid), col= "blue",lwd=2)
+# legend("topright", inset = .04, legend=c("e-scooter","bike-share",
+#       "ondemand transit","ride-hail"), col=c( "red", "orange",
+#       "blueviolet", "blue"), lty = 1, lwd = 2, box.lty = 0)
+# 
+# dev.off()
+
+```
+
+
